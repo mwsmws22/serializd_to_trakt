@@ -16,18 +16,20 @@ from [Serializd](https://www.serializd.com) and format it into a JSON file compa
 Run the script using the following command:
 
 ```bash
-python serializd_to_trakt.py --email <your_email> --password <your_password>
+python serializd_to_trakt.py --serializd_email <your_email> --serializd_password <your_password> --trakt_client_id <your_trakt_client_id>
 ```
 
 ### Arguments
 
-- `--email`: Your Serializd account email address.
-- `--password`: Your Serializd account password.
+- `--serializd_email`: Your Serializd account email address.
+- `--serializd_password`: Your Serializd account password.
+- `--trakt_client_id`: Your Trakt API client ID. You can obtain this from
+  your [Trakt API settings](https://trakt.tv/oauth/applications).
 
 ### Example
 
 ```bash
-python serializd_to_trakt.py --email user@example.com --password mypassword123
+python serializd_to_trakt.py --serializd_email user@example.com --serializd_password mypassword123 --trakt_client_id 4aa6e37d-0a34-4a5d-9018-1342d070f994
 ```
 
 After running the script, a file named `serializd_watched_data.json` will be created in the current directory. This file
@@ -40,11 +42,11 @@ The output JSON file will look like this:
 ```json
 [
   {
-    "tmdb_id": 12345,
+    "tvdb_id": 12345,
     "watched_at": "2023-01-01T12:00:00Z"
   },
   {
-    "tmdb_id": 67890,
+    "tvdb_id": 67890,
     "watched_at": "2023-01-02T15:30:00Z"
   }
 ]
@@ -53,7 +55,9 @@ The output JSON file will look like this:
 To upload this JSON file to Trakt, log into your account and [run the importer](https://trakt.tv/settings/data#import).
 Choose JSON as your import option and upload the file produced by this cript.
 
-## Notes
+## Limitation of Trakt JSON Importer
+
+### TODO - Finish this section
 
 - The script currently does **not** support exporting watchlist data to Trakt because Trakt does not allow importing
   watchlist items by show, only by episode.
@@ -61,10 +65,7 @@ Choose JSON as your import option and upload the file produced by this cript.
     - Frankly, I can't understand why anyone would want to add a show to their watchlist on an episode-by-episode basis.
       This makes sense for history, but not in the context of one's watchlist.
 
-- This script does not support ratings. I don't rate my shows, so this feature wasn't applicable to me. If anyone wants
-  to add it, you're more than welcome to submit a PR.
-
-## Warnings
+## Notes
 
 - There are some descrepencies between Serializd APIs. Sometimes there are episodes that are logged but aren't in the
   actual episode data. For example, for me Archer Season 14 had episodes 10 and 11 as logged, but there are only 9
@@ -87,6 +88,12 @@ Choose JSON as your import option and upload the file produced by this cript.
   This typically due to the formatting of the show name in the API endpoint (refered to as the 'slug'). Requires
   substituting certain special characters like `space` with `-` dash (e.g., `Breaking-Bad`). In the example above,
   the issue with the `/` which needs to be replaced with `%2F`.
+- Unfortunately, Serializd only associates a show with your account if 1) you've marked at least one season as watched
+  or 2) you've marked the show as dropped or paused. Albeit an outlier case, but if you mark only one or two episode
+  as watched, but do not mark the show as dropped or paused, then that show will not appear in your Serializd account
+  data, and so this script will not be able to capture those episodes.
+- This script does not support ratings. I don't rate my shows, so this feature wasn't applicable to me. If anyone wants
+  to add it, you're more than welcome to submit a PR.
 
 ## Contributing
 
