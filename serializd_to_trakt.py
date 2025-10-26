@@ -1,8 +1,6 @@
 import argparse
 import http.client
 import json
-import re
-import urllib.parse
 
 
 def login_to_serializd(email: str, password: str) -> str:
@@ -94,31 +92,19 @@ def fetch_episode_logs(show_id: int, season_id: int, token: str) -> list:
     return data.get("episodeLogs", [])
 
 
-def build_slug(text: str) -> str:
-    """
-    Convert show name to URL-safe slug by replacing special chars with hyphens and
-    normalizing consecutive hyphens.
-    """
-    replace_chars = ["'", "&", ":", " "]
-    slug = text.lower()
-
-    # Replace all special chars with hyphen
-    for char in replace_chars:
-        slug = slug.replace(char, "-")
-
-    # Replace multiple consecutive hyphens with single hyphen
-    slug = re.sub("-+", "-", slug)
-
-    return urllib.parse.quote(slug).replace("/", "%2F")
+def fetch_trakt_show_info(show_id: int, trakt_client_id: str) -> dict:
+    """Fetch show information from Trakt API using TMDB ID."""
+    endpoint = f"/search/tmdb/{show_id}?type=show"
+    status, data = _make_trakt_request(endpoint, trakt_client_id)
+    return {
+        "slug": data[0]["show"]["ids"]["slug"],
+        "id": data[0]["show"]["ids"]["trakt"],
+    }
 
 
-def fetch_episode_ids_trakt(
-    show_name: str, season_number: int, trakt_client_id: str
-) -> dict:
-    """Fetch episode IDs and metadata for a specific show and season from Trakt."""
+def _make_trakt_request(endpoint: str, trakt_client_id: str) -> tuple:
+    """Helper function to make a request to the Trakt API."""
     conn = http.client.HTTPSConnection("api.trakt.tv")
-    show_name_slug = build_slug(show_name)
-    endpoint = f"/shows/{show_name_slug}/seasons/{season_number}"
     headers = {
         "trakt-api-key": trakt_client_id,
         "trakt-api-version": "2",
@@ -131,27 +117,36 @@ def fetch_episode_ids_trakt(
     conn.request("GET", endpoint, "", headers)
     res = conn.getresponse()
 
-    if res.status == 404:
+    if res.status == 200:
+        data = json.loads(res.read().decode("utf-8"))
+        return res.status, data
+
+    return res.status, None
+
+
+def fetch_season_info_trakt(show_slug: str, season_num: int, trakt_id: str) -> tuple:
+    """Fetch season data from Trakt API using the provided slug."""
+    endpoint = f"/shows/{show_slug}/seasons/{season_num}"
+    return _make_trakt_request(endpoint, trakt_id)
+
+
+def episode_num_to_trakt_id(
+    season_num: int, trakt_id: str, show_name: str, show_slug: str
+) -> dict:
+    """Fetch episode IDs and metadata for a specific show and season from Trakt."""
+    status, data = fetch_season_info_trakt(show_slug, season_num, trakt_id)
+    if status != 200:
         print(
-            f"Season [number={season_number}] not found for show [name={show_name}]. "
-            f"Check show_name_slug '{show_name_slug}'"
+            f"Error fetching season [number={season_num}] for show "
+            f"[name={show_name}, slug={show_slug}]: HTTP {status}"
         )
         return {}
-
-    if res.status != 200:
-        raise Exception(
-            f"Error fetching season [number={season_number}] for show "
-            f"[name={show_name}]: HTTP {res.status} {res.reason}"
-        )
-
-    data = json.loads(res.read().decode("utf-8"))
     if not data:
         print(
-            f"No episodes found for season [number={season_number}] of show "
+            f"No episodes found for season [number={season_num}] of show "
             f"[name={show_name}]."
         )
         return {}
-
     return {
         episode["number"]: {
             "trakt_id": episode["ids"]["trakt"],
@@ -164,16 +159,21 @@ def fetch_episode_ids_trakt(
 
 
 def fetch_episodes(
-    show_id: int, show_name: str, season: dict, token: str, trakt_client_id: str
+    show_id: int,
+    show_name: str,
+    season: dict,
+    token: str,
+    trakt_id: str,
+    show_slug: str,
 ) -> list:
     """Fetch all episodes for a specific show and season."""
     season_id = season["id"]
     season_name = season["name"]
-    season_number = season["seasonNumber"]
+    season_num = season["seasonNumber"]
 
     # Fetch episode logs and episode IDs from Trakt
     episode_logs = fetch_episode_logs(show_id, season_id, token)
-    episode_ids = fetch_episode_ids_trakt(show_name, season_number, trakt_client_id)
+    episode_ids = episode_num_to_trakt_id(season_num, trakt_id, show_name, show_slug)
 
     if not episode_ids:
         # If no IDs found, that could mean the season isn't released yet or an issue
@@ -188,7 +188,7 @@ def fetch_episodes(
         if not episode_id_data:
             print(
                 f"Episode [number={episode_number}] not found for season "
-                f"[name={season_name}, number={season_number}, id={season_id}] of "
+                f"[name={season_name}, number={season_num}, id={season_id}] of "
                 f"show [name={show_name}, id={show_id}]"
             )
         else:
@@ -198,7 +198,7 @@ def fetch_episodes(
                     "showName": show_name,
                     "seasonId": season_id,
                     "seasonName": season_name,
-                    "seasonNumber": season_number,
+                    "seasonNumber": season_num,
                     "episodeNumber": episode_number,
                     "dateAdded": episode["dateAdded"],
                     **episode_id_data,
@@ -207,26 +207,26 @@ def fetch_episodes(
     return enriched_episodes
 
 
-def fetch_all_episodes(show_ids: set, token: str, trakt_client_id: str) -> list:
+def fetch_all_episodes(show_ids: set, token: str, trakt_id: str) -> list:
     """Fetch all watched episodes (with metadata) for a set of show IDs."""
     all_episodes = []
     for show_id in show_ids:
         show_name, seasons = fetch_show_seasons(show_id)
-        for season in seasons:
-            episodes = fetch_episodes(
-                show_id, show_name, season, token, trakt_client_id
+        show_slug = fetch_trakt_show_info(show_id, trakt_id)["slug"]
+        all_episodes += [
+            episode
+            for season in seasons
+            for episode in fetch_episodes(
+                show_id, show_name, season, token, trakt_id, show_slug
             )
-            all_episodes.extend(episodes)
+        ]
     return all_episodes
 
 
-def format_for_trakt(watched_episodes: list, watchlist: dict) -> list:
-    """Format watched episodes and watchlisted shows into Trakt-compatible JSON."""
-    # Add watched episodes
-    trakt_data = [
+def format_watched_for_trakt(watched_episodes: list) -> list:
+    """Format watched episodes into Trakt-compatible JSON."""
+    return [
         {
-            # Arbitrarily choosing trakt_id for episode identification, could also use
-            # tvdb_id, tmdb_id, or imdb_id if preferred.
             "trakt_id": episode["trakt_id"],
             "watched_at": episode["dateAdded"],
             "type": "episode",
@@ -234,14 +234,17 @@ def format_for_trakt(watched_episodes: list, watchlist: dict) -> list:
         for episode in watched_episodes
     ]
 
-    # Add watchlisted shows
-    trakt_data.extend(
-        # Serializd uses TMDB for shows and seasons
-        {"tmdb_id": show_id, "watchlisted_at": date_added}
-        for show_id, date_added in watchlist.items()
-    )
 
-    return trakt_data
+def format_watchlist_for_trakt(watchlist: dict, trakt_client_id: str) -> list:
+    """Format watchlisted shows into Trakt-compatible JSON."""
+    return [
+        {
+            "trakt_id": fetch_trakt_show_info(show_id, trakt_client_id)["id"],
+            "watchlisted_at": date_added,
+            "type": "show",
+        }
+        for show_id, date_added in watchlist.items()
+    ]
 
 
 def main():
@@ -269,19 +272,25 @@ def main():
     watched_episodes = fetch_all_episodes(watched, token, args.trakt_client_id)
 
     # Step 4: Format enriched data for Trakt
-    trakt_data = format_for_trakt(watched_episodes, watchlist)
+    watched_data = format_watched_for_trakt(watched_episodes)
+    watchlist_data = format_watchlist_for_trakt(watchlist, args.trakt_client_id)
 
-    # Step 5: Save Trakt-compatible JSON file
-    with open("serializd_to_trakt.json", mode="w", encoding="utf-8") as f:
-        # noinspection PyTypeChecker
-        json.dump(trakt_data, f, indent=4)
+    # Step 5: Save Trakt-compatible JSON files
+    with open("serializd_to_trakt_watched.json", mode="w", encoding="utf-8") as f:
+        json.dump(watched_data, f, indent=4)
+
+    with open("serializd_to_trakt_watchlist.json", mode="w", encoding="utf-8") as f:
+        json.dump(watchlist_data, f, indent=4)
 
     print(
         f"{len(watched_episodes)} watched episodes from "
         f"{len({episode['showId'] for episode in watched_episodes})} shows "
-        f"exported from Serializd"
+        f"exported to serializd_to_trakt_watched.json"
     )
-    print(f"{len(watchlist)} shows from watchlist exported from Serializd")
+    print(
+        f"{len(watchlist_data)} shows from watchlist exported to "
+        f"serializd_to_trakt_watchlist.json"
+    )
 
 
 if __name__ == "__main__":
